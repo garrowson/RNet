@@ -1,5 +1,5 @@
 
-local VERSION = "0.1.0"
+local VERSION = "0.1.2"
 
 local log = require("common/log")
 log.init("/dmesg.log", log.MODE.NEW, true, term.current()) ---@diagnostic disable-line
@@ -70,6 +70,7 @@ if settings.get("rnet.supervisor") then
 
 else
   log.dmesg("Starting as Supervisor")
+  log.dmesg("see monitor for further messages")
   log.close()
   os.sleep(1)
   shell.run("supervisor.lua")

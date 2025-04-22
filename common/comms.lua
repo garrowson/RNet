@@ -6,17 +6,97 @@ local log = require("common/log")
 
 local comms = {}
 
+comms.VERSION = "0.1.0"
+
 ---@enum PROTOCOL
 local PROTOCOL = {
     UNSECRAW = 0,
     ADVERTISE = 1,
     REQUEST_TRANSFERRATE = 2,
     REQUEST_TRANSFERRATE_REPLY = 3,
+    PERIPHERALDATA = 4,
 }
+
+---@enum PERIPHERALDATATYPE
+local PERIPHERALDATATYPE = {
+    UNKNOWN = 0,
+    TRANSFERRATE = 1,
+}
+
+comms.PROTOCOL = PROTOCOL
+comms.PERIPHERALDATATYPE = PERIPHERALDATATYPE
 
 comms.BROADCAST = -1
 
+-- peripheral data packet
+function comms.peripheraldata_packet()
+    local self = {
+        frame = {},
+        peripheralName = "NaN", ---@type string
+        peripheralDataType = PERIPHERALDATATYPE.UNKNOWN, ---@type PERIPHERALDATATYPE
+        data = {}, ---@type table
+    }
+
+    ---@class peripheraldata_packet
+    local public = {}
+
+    -- make an peripheraldata packet
+    ---@param peripheralDataType PERIPHERALDATATYPE
+    function public.make(peripheralName, peripheralDataType)
+        self.peripheralName = peripheralName
+        self.peripheralDataType = peripheralDataType
+        self.raw = { self.peripheralName, self.peripheralDataType, self.data }
+    end
+
+    -- decode an peripheraldata packet
+    ---@param frame net_packet
+    ---@return boolean valid
+    function public.decode(frame)
+        if frame then
+            self.frame = frame
+            if frame.protocol() == PROTOCOL.PERIPHERALDATA then
+                if type(frame.data()) == "table" and #frame.data() == 3 then
+                    local data = frame.data()
+                    self.data = data[3]
+                    public.make(data[1], data[2])
+
+                else
+                    log.debug("attempted PERIPHERALDATA parse of incorrect data type " .. type(frame.data()), true)
+                    return false
+                end
+            else
+                log.debug("attempted UNSECRAW parse of incorrect protocol " .. frame.protocol(), true)
+                return false
+            end
+
+            local valid = type(self.peripheralName) == "string" and
+                        type(self.peripheralDataType) == "number" and
+                        type(self.data) == "table"
+            return valid
+        end
+        return false
+    end
+
+    function public.raw_sendable() return self.raw end
+    function public.get_peripheralName() return self.peripheralName end
+    function public.get_peripheralDataType() return self.peripheralDataType end
+    function public.get_data() return self.data end
+    function public.set_data(data)
+        if type(data) == "table" then
+            self.data = data
+            self.raw = { self.peripheralDataType, self.data }
+            return true
+        else
+            log.debug("attempted to set data to non-table type " .. type(data), true)
+            return false
+        end
+    end
+
+    return public
+end
+
 -- reqest_transferrate packet
+---@deprecated
 function comms.req_transferrate_packet()
     local self = {
         frame = {},
@@ -67,6 +147,7 @@ function comms.req_transferrate_packet()
 end
 
 -- reqest_transferrate_reply packet
+---@deprecated
 function comms.req_transferrate_reply_packet()
     local self = {
         frame = {},
@@ -238,8 +319,5 @@ function comms.net_packet()
 
     return public
 end
-
-
-comms.PROTOCOL = PROTOCOL
 
 return comms

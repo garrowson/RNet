@@ -7,6 +7,8 @@
 local comms = require("common/comms")
 local log = require("common/log")
 
+local VERSION = "0.1.0"
+
 local RNET_CHANNEL = settings.get("rnet.channel")
 
 local PROTOCOL = comms.PROTOCOL
@@ -17,11 +19,10 @@ local pModem = nil ---@type Modem
 
 local function setup()
     log.init("/log.txt", log.MODE.NEW, true, peripheral.find("monitor")) ---@diagnostic disable-line
+    log.dmesg("RNet Supervisor " .. VERSION)
+    log.dmesg("COMMS " .. comms.VERSION .. " loaded")
 
-    ---@diagnostic disable
-    pModem = peripheral.find("modem")
-    pEnergyDetectors = { peripheral.find("energyDetector") }
-    ---@diagnostic enable
+    pModem = peripheral.find("modem") ---@diagnostic disable-line
 
     if not pModem then error("No modem found") end
 

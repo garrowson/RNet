@@ -4,92 +4,117 @@
 local comms = require("common/comms")
 local log = require("common/log")
 
+local VERSION = "0.2.0"
+
 local RNET_CHANNEL = settings.get("rnet.channel")
 local SUPERVISOR_ADR = settings.get("rnet.supervisor")
 
 local PROTOCOL = comms.PROTOCOL
 
-
 local pModem = nil ---@type Modem
+local managedPeripherals = nil ---@type ManagedPeripherals
+local ignoredPeripherals = "modem,drive,"
 
 
-local energyDetectors = {}
+function ManagedPeripherals()
+    local self = {
+        peripherals = {},
+        count = 0
+    }
 
-local function advertise_EnergyDetectors()
-    log.dmesg("Advertising " .. #energyDetectors .. " energy detectors")
-    local names = {}
-    local ids = {}
+    ---@class ManagedPeripherals
+    local public = {}
 
-    for i = 1, #energyDetectors do
-        table.insert(names, energyDetectors[i].name)
-        table.insert(ids, i)
+    ---comment
+    ---@param p any
+    ---@param getDataFunction function
+    function public.addPeripheral(p, getDataFunction)
+        local name = peripheral.getName(p)
+        local value = {}
+        value.peripheral = p
+        value.getData = getDataFunction
+
+        self.peripherals[name] = value
+        self.count = self.count + 1
     end
 
-    local net_pkt = comms.net_packet()
-    local adv_pkt = comms.advertise_packet()
-
-    adv_pkt.make("energyDetector", names, ids, #energyDetectors)
-    net_pkt.make(SUPERVISOR_ADR, PROTOCOL.ADVERTISE, adv_pkt.raw_sendable())
-
-    pModem.transmit(RNET_CHANNEL, RNET_CHANNEL, net_pkt.raw_sendable())
-end
-
----comment
----@param names table Names of the energy detectors
----@param ids table Ids of the energy detectors
----@return table ratesForNamed Rates for named energy detectors
----@return table ratesForIds Rates for id energy detectors
-local function getTransferRates(names, ids)
-    local ratesForNamed = {}
-    local ratesForIds = {}
-
-    for i = 1, #names do
-        for j = 1, #energyDetectors do
-            if names[i] == energyDetectors[j].name then
-                local rate = energyDetectors[j].peripheral.getTransferRate()
-                table.insert(ratesForNamed, rate)
-                break
-            end
+    --- Get peripheral
+    --- @param name string
+    --- @return any
+    function public.getPeripheral(name)
+        if self.peripherals[name] then
+            return self.peripherals[name].peripheral
+        else
+            return nil
         end
     end
 
-    for i = 1, #ids do
-        table.insert(ratesForIds, energyDetectors[ids[i]].peripheral.getTransferRate())
+    ---Get data from peripheral using the registered function
+    ---@param name string
+    ---@return table
+    function public.getPeripheralData(name)
+        if self.peripherals[name] then
+            return self.peripherals[name].getData()
+        else
+            return {}
+        end
     end
 
-    return ratesForNamed, ratesForIds
+
+     ---Get count of managed peripherals
+     ---@return integer
+    function public.getCount() return self.count end
+
+    return public
 end
+
+
+
 
 local function setup()
     term.clear()
     term.setCursorPos(1, 1)
     log.init("/log.txt", log.MODE.NEW, true)
+    log.info("RNet PLC " .. VERSION)
+    term.write("RNet PLC " .. VERSION .. " started\n")
+    log.info("COMMS " .. comms.VERSION .. " loaded")
 
-    ---@diagnostic disable
-    pModem = peripheral.find("modem")
-    local pEnergyDetectors = { peripheral.find("energyDetector") }
-    ---@diagnostic enable
-
+    pModem = peripheral.find("modem") ---@diagnostic disable-line
     if not pModem then error("No modem found") end
-
     pModem.open(RNET_CHANNEL)
 
-    energyDetectors = {}
-    if #pEnergyDetectors > 0 then
-        for i = 1, #pEnergyDetectors do
-            local kv = {}
-            kv.name = pEnergyDetectors[i].getName()
-            kv.peripheral = pEnergyDetectors[i]
-            table.insert(energyDetectors, kv)
-        end
+    log.info("Modem opened on channel " .. RNET_CHANNEL)
+    log.info("Supervisor address: " .. SUPERVISOR_ADR)
+    log.info("Loading peripherals...")
 
-        advertise_EnergyDetectors()
+    managedPeripherals = ManagedPeripherals()
+
+    local peripherals = peripheral.getNames()
+    for _, name in ipairs(peripherals) do
+        local peripheralType = peripheral.getType(name)
+        local device = peripheral.wrap(name) ---@type any
+
+        if peripheralType == "energyDetector" then
+            local getDataFunction = function() return device.getTransferRate() end
+            managedPeripherals.addPeripheral(device, getDataFunction)
+            log.info("Added energyDetector " .. name)
+
+        elseif string.find(ignoredPeripherals, peripheralType .. ",") then
+            log.debug("Ignoring " .. peripheralType .. " " .. name)
+        else
+            log.debug(peripheralType .. " is not supported")
+        end
     end
+    log.info("Loaded " .. managedPeripherals.getCount() .. " peripherals")
+
+
+
+
+    log.info("entering main loop")
 end
 
 
 local function main()
-    local timer = os.startTimer(1)
     local event = { os.pullEvent() }
 
     if event[1] == "modem_message" then
@@ -98,29 +123,26 @@ local function main()
         net_packet.receive(message)
 
         if net_packet.is_valid() then
-            if net_packet.protocol() == PROTOCOL.REQUEST_TRANSFERRATE then
-                local req_tfrate = comms.req_transferrate_packet()
-                local valid = req_tfrate.decode(net_packet)
+            if net_packet.protocol() == PROTOCOL.PERIPHERALDATA then
+                local periph_pckt = comms.peripheraldata_packet()
+                local valid = periph_pckt.decode(net_packet)
 
                 if valid then
-                    log.dmesg("TRANSFERRATEs requested")
-                    local ratesForNamed, ratesForIds = getTransferRates(req_tfrate.get_peripheralNames(), req_tfrate.get_peripheralIds())
+                    local peripheralName = periph_pckt.get_peripheralName()
+                    
+                    if managedPeripherals.getPeripheral(peripheralName) == -1 then
+                        log.info(peripheralName .. " requested, but not known")
+                    else
+                        local data = managedPeripherals.getPeripheralData(peripheralName)
+                        local net_pkt = comms.net_packet()
+                        net_pkt.make(SUPERVISOR_ADR, PROTOCOL.PERIPHERALDATA, data)
+                        pModem.transmit(RNET_CHANNEL, RNET_CHANNEL, net_pkt.raw_sendable())
+                        log.info("Data sent for " .. peripheralName)
 
-                    local net_pkt = comms.net_packet()
-                    local tfraterply_pkt = comms.req_transferrate_reply_packet()
-                    tfraterply_pkt.make(ratesForNamed, ratesForIds)
-                    net_pkt.make(SUPERVISOR_ADR, PROTOCOL.REQUEST_TRANSFERRATE_REPLY, tfraterply_pkt.raw_sendable())
-                    pModem.transmit(RNET_CHANNEL, RNET_CHANNEL, net_pkt.raw_sendable())
+                    end
                 end
-                
-            end
-        end
-
-    elseif event[1] == "timer" then
-        if event[2] == timer then
             
-
-            timer = os.startTimer(1)
+            end
         end
     end
 end
