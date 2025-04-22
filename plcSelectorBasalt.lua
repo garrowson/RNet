@@ -13,9 +13,12 @@ local input = peripheral.wrap("back")
 local outOn = "bottom"
 local outOff= nil
 local cycletime = 10
+local roundRobin = true
 
 -- Global variables
 local switches = {}
+local lastRoundRobinIndex = 0
+local blockingMode = true
 
 if input == nil then log.dmesg("No input inventory found") return end
 
@@ -67,6 +70,16 @@ function Switches(parent)
         else
             return nil
         end
+    end
+
+    ---Returns a table with the states of all switches
+    ---@return table states[name] boolean
+    function public.getAllSwitchStates()
+        local states = {}
+        for name, sw in pairs(self.list) do
+            states[name] = sw.state
+        end
+        return states
     end
 
     ---Toggles or sets the state of the switch
@@ -147,12 +160,14 @@ local function learnButtons(container)
     for i = 1, input.size() do
         local item = input.getItemDetail(i)
         if item then
-            local name = item.name
+            local name = item.name ---@type string
             if not knownItems[name] then
                 knownItems[name] = shortenDescriptiveName(item.displayName)
-                local file = fs.open("knownItems.txt", "a")
+                ---@diagnostic disable: need-check-nil
+                file = fs.open("knownItems.txt", "a")
                 file.writeLine(name .. "|" .. knownItems[name])
                 file.close()
+                ---@diagnostic enable: need-check-nil
             end
         end
     end
@@ -167,19 +182,57 @@ local function learnButtons(container)
 end
 
 ---Moves items from input to output1 or output2 depending on the state of the coresponding switche
-local function moveItems()
+---@param roundRobin boolean Should items be moved in round robin mode?
+local function moveItems(roundRobin)
+    local selectedItem = ""
+    if roundRobin then
+      -- determine the next round robin item
+        local states = switches.getAllSwitchStates()
+        local statesOn = {}
+        for descName, state in pairs(states) do
+            if state then
+                table.insert(statesOn, descName)
+            end
+        end
+
+        if #statesOn > 0 then
+            lastRoundRobinIndex = lastRoundRobinIndex +1
+            if lastRoundRobinIndex > #statesOn then
+                lastRoundRobinIndex = 1
+            end
+            selectedItem = statesOn[lastRoundRobinIndex]
+        end
+        log.debug("RoundRobin mode list: " .. textutils.serialise(statesOn, { compact = true }))
+        log.debug("Selected index: " .. lastRoundRobinIndex .. " - " .. selectedItem)
+    end
+
+    -- loop input for items
     for i = 1, input.size() do
         local item = input.getItemDetail(i)
         if item then
             if Lookupdict[item.name] then
                 local descName = Lookupdict[item.name]
-                local state = switches.getSwitchState(descName)
-                if state~=nil then
-                    if state then
-                        input.pushItems(outOn, i)
-                    else
-                        if outOff then
-                           input.pushItems(outOff, i)
+                if selectedItem ~= "" then
+                  if selectedItem==descName then
+                    local count = input.pushItems(outOn, i)
+                    if count==0 then
+                      if blockingMode then
+                        log.debug("Moved 0 items while in forced round robin mode - retrying next round")
+                        lastRoundRobinIndex = lastRoundRobinIndex -1
+                      else
+                        log.debug("Moved 0 items while in round robin mode - skipping")
+                      end
+                    end
+                  end
+                else
+                    local state = switches.getSwitchState(descName)
+                    if state~=nil then
+                        if state then
+                            input.pushItems(outOn, i)
+                        else
+                            if outOff then
+                            input.pushItems(outOff, i)
+                            end
                         end
                     end
                 end
@@ -195,7 +248,7 @@ local function maineventloop()
         local event = {os.pullEvent()}
         if event[1] == "timer" and timer==event[2] then
             timer = os.startTimer(cycletime)
-            moveItems()
+            moveItems(roundRobin)
 
         elseif event[1] == "switch" then
             log.debug(textutils.serialize(event, { compact = true }))
