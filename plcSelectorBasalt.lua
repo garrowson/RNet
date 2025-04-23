@@ -14,11 +14,11 @@ local outOn = "bottom"
 local outOff= nil
 local cycletime = 10
 local roundRobin = true
+local blockingMode = true
 
 -- Global variables
 local switches = {}
 local lastRoundRobinIndex = 0
-local blockingMode = true
 
 if input == nil then log.dmesg("No input inventory found") return end
 
@@ -159,7 +159,7 @@ local function learnButtons(container)
 
     for i = 1, input.size() do
         local item = input.getItemDetail(i)
-        if item then
+        if item and item.name~="" then
             local name = item.name ---@type string
             if not knownItems[name] then
                 knownItems[name] = shortenDescriptiveName(item.displayName)
