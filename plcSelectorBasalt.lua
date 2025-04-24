@@ -59,6 +59,10 @@ function Switches(parent)
         sw.color = 2^self.count
         self.count = self.count + 1
 
+        -- calculate button size
+        local w, _ = self.parent:getSize()
+        sw.btn:setWidth((w-3)/4)
+
         ---Sets the state of the switch. Will queue an event "switch" with the name and state of the switch
         ---@param state boolean
         function sw.setState(state)
@@ -152,8 +156,8 @@ local function setupBasalt()
         :setPosition(1, 2)
 
     local flexbox = cont:addFlexbox()
-        :setSize("{parent.width-8}", "{parent.height-2}")
-        :setPosition(5, 2)
+        :setSize("{parent.width-2}", "{parent.height-2}")
+        :setPosition(2, 2)
         :setFlexWrap(true)
         :setBackground(colors.gray)
 
@@ -162,11 +166,11 @@ end
 
 ---Shorten the descriptive name of the item by removing spaces and vocals if the name is longer than 10 characters
 ---@param name string
-local function shortenDescriptiveName(name)
-    if #name > 10 then
+local function shortenDescriptiveName(name, width)
+    if #name > width then
         name = name:gsub(" ", ""):gsub("[aeiou]", "")
-        if #name > 10 then
-            name = name:sub(1, 10)
+        if #name > width then
+            name = name:sub(1, width)
         end
     end
     return name
