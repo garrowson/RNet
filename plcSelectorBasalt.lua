@@ -9,18 +9,27 @@ end
 local basalt = require("basalt")
 
 -- Settings
-local input = peripheral.wrap("back")
-local outOn = "bottom"
-local outOff= nil
-local cycletime = 10
-local roundRobin = true
-local blockingMode = true
+local SETTINGPREFIX = "plcselect."
+local input = settings.get(SETTINGPREFIX .. "input", nil)
+local outOn = settings.get(SETTINGPREFIX .. "outOn", nil)
+local outOff= settings.get(SETTINGPREFIX .. "outOff", nil)
+local cycletime = settings.get(SETTINGPREFIX .. "cycle", 10)
+local roundRobin = settings.get(SETTINGPREFIX .. "roundRobin", false)
+local blockingMode = settings.get(SETTINGPREFIX .. "blockingMode", false)
+local storedStates = settings.get(SETTINGPREFIX .. "storedStates", 0)
+local bundledSide = settings.get(SETTINGPREFIX .. "bundledSide", nil)
 
 -- Global variables
-local switches = {}
+---@diagnostic disable-next-line: missing-fields
+local switches = { }    ---@type Switches
 local lastRoundRobinIndex = 0
 
-if input == nil then log.dmesg("No input inventory found") return end
+local pInput = peripheral.wrap(input) ---@diagnostic disable need-check-nil
+if not pInput and input ~= nil then
+    log.dmesg("Input inventory not found", "ERROR", colors.red)
+    print() -- next line
+    return
+end
 
 ---Provides a simple interface to add switches to a frame
 ---@param parent any The parent frame to add the switches to
@@ -28,7 +37,8 @@ if input == nil then log.dmesg("No input inventory found") return end
 function Switches(parent)
     local self = {
         parent = parent,
-        list = {}
+        list = {},
+        count = 0
     }
 
     ---@class Switches
@@ -38,7 +48,7 @@ function Switches(parent)
     ---@param name string Text and identifier of the switch
     ---@return boolean success
     function public.add(name)
-        if self.list[name] then
+        if self.list[name] or self.count >= 16 then
             return false
         end
 
@@ -46,13 +56,15 @@ function Switches(parent)
         sw.state = false
         sw.name = name
         sw.btn = self.parent:addButton():setText(sw.name)
+        sw.color = 2^self.count
+        self.count = self.count + 1
 
         ---Sets the state of the switch. Will queue an event "switch" with the name and state of the switch
         ---@param state boolean
         function sw.setState(state)
             sw.state = state
             sw.btn:setBackground(state and colors.green or colors.red)
-            os.queueEvent("switch", sw.name, sw.state)
+            os.queueEvent("switch", sw.name, sw.state, sw.color)
         end
 
         sw.btn:onClick(function() sw.setState(not sw.state) end)
@@ -82,9 +94,21 @@ function Switches(parent)
         return states
     end
 
+    ---Returns the bundled representation of the switches
+    ---@return colorSet bundledState The bundled representation of activated siches
+    function public.getAllSwitchBundled()
+        local bundledState = 0
+        for _, sw in pairs(self.list) do
+            if sw.state then
+                bundledState = bundledState + sw.color
+            end
+        end
+        return bundledState
+    end
+
     ---Toggles or sets the state of the switch
-    ---@param name string
-    ---@param state boolean
+    ---@param name string Name of the switch
+    ---@param state boolean State the switch should be set to
     function public.toggleSwitch(name, state)
         local sw = self.list[name]
         if sw then
@@ -93,6 +117,16 @@ function Switches(parent)
             else 
                 sw.setState(state)
             end
+        end
+    end
+
+    ---Returns the asociated color of the switch
+    ---@param name string Name of the switch
+    ---@return color Returns associated color of the switch
+    function public.getSwitchColor(name)
+        local sw = self.list[name]
+        if sw then
+            return sw.color
         end
     end
 
@@ -138,44 +172,29 @@ local function shortenDescriptiveName(name)
     return name
 end
 
----Reads previously learned items from file and searches through input container to learn possible new items
----@param container any
-local function learnButtons(container)
+---Loads buttons from file and returns the loaded list
+---@return table table list of known items
+local function loadButtonsFromFile()
     local knownItems = {}
 
     local file = fs.open("knownItems.txt", "r")
     if file then
         local line = file.readLine()
-        while line do
+
+        for i=0, 15 do
+            if not line then break end
             local index = line:find("|")
             local name = line:sub(1, index-1)
             local desc = line:sub(index+1)
 
             knownItems[name] = desc
+
+            switches.add(desc)
+            switches.toggleSwitch(desc, colors.test(storedStates, 2^i))
+
             line = file.readLine()
         end
         file.close()
-    end
-
-    for i = 1, input.size() do
-        local item = input.getItemDetail(i)
-        if item and item.name~="" then
-            local name = item.name ---@type string
-            if not knownItems[name] then
-                knownItems[name] = shortenDescriptiveName(item.displayName)
-                ---@diagnostic disable: need-check-nil
-                file = fs.open("knownItems.txt", "a")
-                file.writeLine(name .. "|" .. knownItems[name])
-                file.close()
-                ---@diagnostic enable: need-check-nil
-            end
-        end
-    end
-
-    switches = Switches(container)
-    for name, descname in pairs(knownItems) do
-        switches.add(descname)
-        switches.toggleSwitch(descname, false)
     end
 
     return knownItems
@@ -207,14 +226,14 @@ local function moveItems(roundRobin)
     end
 
     -- loop input for items
-    for i = 1, input.size() do
-        local item = input.getItemDetail(i)
+    for i = 1, pInput.size() do
+        local item = pInput.getItemDetail(i)
         if item then
             if Lookupdict[item.name] then
                 local descName = Lookupdict[item.name]
                 if selectedItem ~= "" then
                   if selectedItem==descName then
-                    local count = input.pushItems(outOn, i)
+                    local count = pInput.pushItems(outOn, i)
                     if count==0 then
                       if blockingMode then
                         log.debug("Moved 0 items while in forced round robin mode - retrying next round")
@@ -228,10 +247,10 @@ local function moveItems(roundRobin)
                     local state = switches.getSwitchState(descName)
                     if state~=nil then
                         if state then
-                            input.pushItems(outOn, i)
+                            pInput.pushItems(outOn, i)
                         else
                             if outOff then
-                            input.pushItems(outOff, i)
+                                pInput.pushItems(outOff, i)
                             end
                         end
                     end
@@ -245,22 +264,38 @@ end
 local function maineventloop()
     local timer = os.startTimer(cycletime)
     while true do
-        local event = {os.pullEvent()}
-        if event[1] == "timer" and timer==event[2] then
+        local rawevent = {os.pullEvent()}
+        local event = table.remove(rawevent, 1)
+        if event == "timer" and timer==rawevent[1] then
             timer = os.startTimer(cycletime)
-            moveItems(roundRobin)
+            
+            if pInput then moveItems(roundRobin) end
 
-        elseif event[1] == "switch" then
+        elseif event == "switch" then
+            local name, state, color = table.unpack(rawevent)
+
+            settings.set(SETTINGPREFIX .. "storedStates", switches.getAllSwitchBundled())
+            settings.save()
+
             log.debug(textutils.serialize(event, { compact = true }))
+        end
+
+        if bundledSide then
+            redstone.setBundledOutput(bundledSide, switches.getAllSwitchBundled())
         end
     end
 end
 
 -- ----------------------------------------
--- MAIN
+-- START
 -- ----------------------------------------
 local frame = setupBasalt()
-Lookupdict = learnButtons(frame)
+switches = Switches(frame)
+Lookupdict = loadButtonsFromFile()
 
 parallel.waitForAny(basalt.run, maineventloop)
 
+-- cleanup
+if bundledSide then
+    redstone.setBundledOutput(bundledSide, 0)
+end
